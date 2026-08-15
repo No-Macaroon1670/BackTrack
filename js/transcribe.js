@@ -74,6 +74,113 @@ function modelTimeToFrame(t) {
 }
 
 /**
+ * Second-pass recovery in the gaps between detected notes.
+ *
+ * The measured weakness is recall, not precision: on the hardest clips the
+ * transcriber finds a third of the reference notes. Raising sensitivity
+ * globally trades that recall for precision everywhere else (the grid search
+ * showed the defaults are already near-optimal), so instead this re-reads the
+ * *cached* posteriorgram only where nothing was detected, with a threshold
+ * low enough to catch what the first pass missed. Aggressive locally,
+ * unchanged globally — and free, because inference is already done.
+ *
+ * Within each gap it takes the argmax pitch bin per frame and segments runs
+ * that hold the same pitch, which is a monophonic decode of exactly the
+ * region the first pass gave up on. Callers must still validate the results
+ * against the audio (analyze.js runs YIN over them) — this only proposes.
+ *
+ * @returns {Array<{start,end,dur,midiFloat,amp,recovered}>} candidates
+ */
+export function recoverGapNotes(cache, notes, duration, {
+  // 0.18 is a measured optimum, not a guess: accuracy falls off on BOTH sides
+  // (0.12 → COnP .513, 0.18 → .533, 0.24 → .525, 0.30 → .514, 0.38 → .511).
+  // Counter-intuitively a stricter threshold RAISES recall, because tracking
+  // the argmax through low-confidence frames yields wobbling pitch, which
+  // fragments runs below minDur and gets them rejected by YIN anyway.
+  threshold = 0.18, minGap = 0.18, minDur = 0.09, edge = 0.03, wobble = 1,
+  maxCoverage = 1,
+} = {}) {
+  const frames = cache?.frames;
+  if (!frames?.length || frames[0].length !== 88) return [];
+
+  // Optional self-gate, DEFAULT OFF (maxCoverage = 1) because measurement
+  // retired it: it was designed to stop recovery harming already-healthy
+  // takes, but that harm turned out to be an artefact of the old, looser
+  // threshold. At 0.18 recovery helps healthy clips too (best-10 COnP
+  // .606 → .626), and gating then only blocks good recoveries (.532 → .522).
+  // Kept for material where recall matters far less than precision.
+  if (maxCoverage < 1) {
+    let voiced = 0, covered = 0;
+    const iv = notes.map((n) => [n.start, n.end]).sort((a, b) => a[0] - b[0]);
+    let vi = 0;
+    for (let f = 0; f < frames.length; f++) {
+      const row = frames[f];
+      let peak = 0;
+      for (let c = 0; c < 88; c++) if (row[c] > peak) peak = row[c];
+      if (peak < 0.3) continue;
+      voiced++;
+      const t = modelFrameToTime(f);
+      while (vi < iv.length && iv[vi][1] < t) vi++;
+      if (vi < iv.length && t >= iv[vi][0] && t <= iv[vi][1]) covered++;
+    }
+    if (voiced > 0 && covered / voiced >= maxCoverage) return [];
+  }
+
+  // Uncovered intervals, in time.
+  const sorted = [...notes].sort((a, b) => a.start - b.start);
+  const gaps = [];
+  let cursor = 0;
+  for (const n of sorted) {
+    if (n.start - cursor >= minGap) gaps.push([cursor, n.start]);
+    cursor = Math.max(cursor, n.end);
+  }
+  if (duration - cursor >= minGap) gaps.push([cursor, duration]);
+  if (!gaps.length) return [];
+
+  const out = [];
+  for (const [g0, g1] of gaps) {
+    // Keep off the neighbours' boundaries: the edges of a gap are where the
+    // adjacent notes' own energy bleeds in.
+    const lo = g0 + edge, hi = g1 - edge;
+    if (hi - lo < minDur) continue;
+    const f0 = Math.max(0, modelTimeToFrame(lo));
+    const f1 = Math.min(frames.length - 1, modelTimeToFrame(hi));
+
+    let runBin = -1, runStart = -1, runSum = 0, runLen = 0;
+    const flush = (endFrame) => {
+      if (runBin >= 0 && runLen > 0) {
+        const start = Math.max(lo, modelFrameToTime(runStart));
+        const end = Math.min(hi, modelFrameToTime(endFrame));
+        if (end - start >= minDur) {
+          out.push({
+            start, end, dur: end - start,
+            midiFloat: runBin + 21,
+            amp: runSum / runLen,
+            recovered: true,
+          });
+        }
+      }
+      runBin = -1; runStart = -1; runSum = 0; runLen = 0;
+    };
+
+    for (let f = f0; f <= f1; f++) {
+      const row = frames[f];
+      let best = -1, bestV = 0;
+      for (let c = 0; c < 88; c++) {
+        if (row[c] > bestV) { bestV = row[c]; best = c; }
+      }
+      if (best < 0 || bestV < threshold) { flush(f); continue; }
+      if (runBin < 0) { runBin = best; runStart = f; runSum = 0; runLen = 0; }
+      else if (Math.abs(best - runBin) > wobble) { flush(f); runBin = best; runStart = f; }
+      runSum += bestV;
+      runLen++;
+    }
+    flush(f1 + 1);
+  }
+  return out;
+}
+
+/**
  * Stamps each note with `conf` (0..1): how strongly the model's posteriorgram
  * supports the note AS DRAWN — peak activation over its current span at its
  * current pitch (±1 semitone bin, tolerating tuning offsets). Recomputed

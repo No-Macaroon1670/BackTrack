@@ -459,6 +459,71 @@ export function snapNoteOnsets(x, notes) {
   return snapped;
 }
 
+/**
+ * Snaps note ENDS to nearby energy decays — the mirror of snapNoteOnsets, and
+ * aimed at the pipeline's weakest metric (offsets score far below onsets).
+ * The transcriber ends a note when its pitch estimate destabilises, which
+ * drifts late through a release tail or early through a wobble; the energy
+ * envelope falls at the moment the sound actually stops.
+ *
+ * For each note we look ±OFF_WINDOW around its end for the steepest fall in
+ * the same 6 ms envelope, then walk FORWARD to where the fall flattens out —
+ * the note is over once the decay finishes, not where it began. Notes with no
+ * clear decay nearby (legato transitions into the next note, notes that fade)
+ * are left untouched.
+ *
+ * @returns {number} how many note ends were adjusted
+ */
+export function snapNoteOffsets(x, notes, { window: winSec = 0.09, minDur = 0.06 } = {}) {
+  const hopDur = SNAP_HOP / ANALYSIS_SR;
+  const win = SNAP_HOP * 2;
+  const nFrames = Math.floor((x.length - win) / SNAP_HOP);
+  if (nFrames < 8) return 0;
+
+  const rms = new Float32Array(nFrames);
+  for (let i = 0; i < nFrames; i++) {
+    let sum = 0;
+    const off = i * SNAP_HOP;
+    for (let j = 0; j < win; j++) {
+      const v = x[off + j];
+      sum += v * v;
+    }
+    rms[i] = Math.sqrt(sum / win);
+  }
+  // Falling flux: the opposite sign to the onset envelope.
+  const decay = new Float32Array(nFrames);
+  for (let i = 1; i < nFrames; i++) decay[i] = Math.max(0, rms[i - 1] - rms[i]);
+
+  const sorted = [...decay].sort((a, b) => a - b);
+  const medFlux = sorted[nFrames >> 1];
+  const thresh = Math.max(3 * medFlux, 0.04 * sorted[nFrames - 1]);
+
+  let snapped = 0;
+  for (let k = 0; k < notes.length; k++) {
+    const n = notes[k];
+    const lo = Math.max(1, Math.round((n.end - winSec) / hopDur));
+    const hi = Math.min(nFrames - 1, Math.round((n.end + winSec) / hopDur));
+    let peakIdx = -1;
+    for (let i = lo; i <= hi; i++) {
+      if (decay[i] > thresh && (peakIdx === -1 || decay[i] > decay[peakIdx])) peakIdx = i;
+    }
+    if (peakIdx === -1) continue; // no clear release: legato or fade, leave it
+
+    // Walk forward to where the decay flattens (max 48 ms).
+    let fallIdx = peakIdx;
+    while (fallIdx < hi && fallIdx < peakIdx + 8 && decay[fallIdx + 1] >= 0.25 * decay[peakIdx]) fallIdx++;
+
+    const t = fallIdx * hopDur;
+    if (t - n.start < minDur || Math.abs(t - n.end) < hopDur) continue;
+    const next = notes[k + 1];
+    if (next && t > next.start) continue; // never swallow the next note
+    n.end = t;
+    n.dur = n.end - n.start;
+    snapped++;
+  }
+  return snapped;
+}
+
 // ---------------------------------------------------------------------------
 // Syllable lock
 // ---------------------------------------------------------------------------

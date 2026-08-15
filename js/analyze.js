@@ -8,12 +8,13 @@
 // this file wires them together and hosts the YIN fallback engine used when
 // the neural model can't load.
 
-import { transcribeBasicPitch, getBackend, BASIC_PITCH_SR } from "./transcribe.js";
+import { transcribeBasicPitch, getBackend, BASIC_PITCH_SR, recoverGapNotes } from "./transcribe.js";
 import {
   ANALYSIS_SR, FRAME_SIZE, HOP, toMono, resample, median, createYin, yinFrame,
 } from "./dsp.js";
 import {
-  refineNote, octaveCorrect, consolidateRepeats, snapNoteOnsets, applySyllableLock, applyMinNote, simplifyNotes,
+  refineNote, octaveCorrect, consolidateRepeats, snapNoteOnsets, snapNoteOffsets,
+  applySyllableLock, applyMinNote, simplifyNotes,
 } from "./notes.js";
 import { detectBeats, noteAnchoredGrid, foldTempo } from "./rhythm.js";
 import { detectKey, estimateTuning } from "./key.js";
@@ -39,7 +40,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 export async function analyzeVocal(
   audioBuffer,
   onProgress = () => {},
-  { sensitivity = 0.5, snapOnsets = true, followNotes = true, autoTune = 0, syllableLock = false, minNote = 0.25, octaveFix = false, adaptivePitch = true, consolidate = true } = {},
+  { sensitivity = 0.5, snapOnsets = true, followNotes = true, autoTune = 0, syllableLock = false, minNote = 0.25, octaveFix = false, adaptivePitch = true, consolidate = true, gapRecovery = true, snapOffsets = false, pitchAugment = 0 } = {},
   modelCache = null,
 ) {
   const mono = toMono(audioBuffer);
@@ -77,6 +78,61 @@ export async function analyzeVocal(
     throw new Error("Couldn't detect any sung notes. Try recording again, closer to the mic and with a clearer melody.");
   }
 
+  // Test-time pitch augmentation. The model is measurably weaker below ~MIDI
+  // 53, which is exactly where low voices live. Rather than compensate with
+  // thresholds, transcribe the take a second time shifted UP into the range
+  // where the model is strong, then map the notes back down. Speeding the
+  // waveform up by r raises pitch by `pitchAugment` semitones and divides
+  // every timestamp by r, so undoing it is a multiply and a subtract.
+  // The extra pass only fills gaps — the unshifted pass stays authoritative.
+  if (pitchAugment > 0 && engine === "basic-pitch") {
+    try {
+      const r = Math.pow(2, pitchAugment / 12);
+      const xUp = resample(
+        resample(mono, audioBuffer.sampleRate, BASIC_PITCH_SR),
+        BASIC_PITCH_SR, BASIC_PITCH_SR / r,
+      );
+      cache.aug ??= {};
+      // adaptivePitch off: the point of shifting is to leave the low-voice
+      // regime, so re-applying the low-voice boost would double-compensate.
+      const augRaw = await transcribeBasicPitch(xUp, () => {}, sensitivity, cache.aug, false);
+      const mapped = (augRaw ?? []).map((n) => ({
+        start: n.start * r,
+        end: n.end * r,
+        dur: (n.end - n.start) * r,
+        midiFloat: n.midiFloat - pitchAugment,
+        amp: n.amp,
+        augmented: true,
+      }));
+      const fresh = mapped.filter((a) =>
+        a.dur >= 0.08 && !notes.some((n) => Math.min(n.end, a.end) - Math.max(n.start, a.start) > 0));
+      if (fresh.length) {
+        const yin = createYin();
+        const kept = fresh.filter((n) => refineNote(x, n, yin));
+        if (kept.length) notes = [...notes, ...kept].sort((a, b) => a.start - b.start);
+        console.debug(`Pitch augment (+${pitchAugment}): ${kept.length} of ${fresh.length} gap notes kept`);
+      }
+    } catch (err) {
+      console.warn("Pitch augmentation unavailable:", err);
+    }
+  }
+
+  // Second-pass recovery: re-read the cached posteriorgram in the gaps the
+  // first pass left empty, then hold the candidates to the same YIN standard
+  // as everything else — proposing is cheap, so the referee does the work.
+  if (gapRecovery && engine === "basic-pitch" && cache.frames?.length) {
+    const opts = typeof gapRecovery === "object" ? gapRecovery : {};
+    const cands = recoverGapNotes(cache, notes, audioBuffer.duration, opts);
+    if (cands.length) {
+      const yin = createYin();
+      const kept = cands.filter((n) => refineNote(x, n, yin));
+      if (kept.length) {
+        notes = [...notes, ...kept].sort((a, b) => a.start - b.start);
+      }
+      console.debug(`Gap recovery: ${kept.length} of ${cands.length} candidates kept`);
+    }
+  }
+
   // Octave correction via sub-harmonic summation (opt-in, default off).
   // Measured inert on Vocadito: the YIN cross-validation above already fixes
   // octaves on real voices, and low-voice failures turned out to be onset
@@ -103,6 +159,17 @@ export async function analyzeVocal(
   if (snapOnsets) {
     const snapped = snapNoteOnsets(x, notes);
     console.debug(`Onset snap adjusted ${snapped} of ${notes.length} note starts`);
+  }
+
+  // The same idea applied to note ends — MEASURED HARMFUL, hence default off.
+  // On Vocadito it cost 4.1 points of COnPOff, the very metric it targets,
+  // because a held note's energy dips mid-note (vibrato, tremolo) and the
+  // decay search truncates there; shortened notes then fall under the
+  // minimum-length filter and disappear entirely (up to 10 lost on a clip).
+  // Kept opt-in for material with harder, more percussive note ends.
+  if (snapOffsets) {
+    const snapped = snapNoteOffsets(x, notes);
+    console.debug(`Offset snap adjusted ${snapped} of ${notes.length} note ends`);
   }
 
   // Syllable lock: when the singer articulates every note with the same
