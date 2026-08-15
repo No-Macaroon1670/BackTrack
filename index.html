@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BackTrack — sing it, we'll back you up</title>
+  <meta name="description" content="Hum or sing a melody and get an instant backing band — transcription, chords, and arrangement entirely in your browser. Your audio never leaves the page." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%8E%B5%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Back<span class="accent">Track</span></h1>
+    <p class="tagline">Sing or hum a melody — get an instant backing band.</p>
+  </header>
+
+  <main>
+    <!-- 1. Record -->
+    <section id="record-panel" class="card">
+      <h2>1 · Record your vocal</h2>
+      <p class="hint">Sing or hum 10–60 seconds in a quiet room, close to the mic — or upload an MP3/WAV vocal take, or a MIDI file with a melody. A clear, steady melody without accompaniment works best.</p>
+      <div class="row">
+        <button id="recordBtn" class="big-btn">● Record</button>
+        <span id="recTimer" class="timer">0:00</span>
+        <span class="or">or</span>
+        <button id="uploadBtn">⬆ Upload audio file</button>
+        <input type="file" id="uploadInput" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac,.webm,.mid,.midi" hidden />
+        <span id="uploadName" class="status"></span>
+      </div>
+      <canvas id="meter" width="600" height="48" role="img" aria-label="Microphone input level"></canvas>
+      <p id="recError" class="error" hidden></p>
+    </section>
+
+    <!-- 2. Analyze + configure -->
+    <section id="analysis-panel" class="card" hidden>
+      <h2>2 · Analysis</h2>
+      <div id="analysis-progress">
+        <p id="analysisPhase">Listening to your performance…</p>
+        <div class="bar"><div id="analysisBar" class="fill"></div></div>
+      </div>
+      <div id="analysis-results" hidden>
+        <div class="row chips">
+          <span class="chip">Key: <strong id="keyLabel">—</strong></span>
+          <span class="chip">Notes: <strong id="noteCount">—</strong></span>
+          <span class="chip">Ears: <strong id="engineLabel">—</strong></span>
+          <label class="chip">Tempo:
+            <input type="number" id="tempoInput" min="50" max="200" step="1" /> BPM
+          </label>
+          <label class="chip">Style:
+            <select id="styleSelect">
+              <option value="pop">Pop</option>
+              <option value="ballad">Ballad</option>
+              <option value="lofi">Lo-fi</option>
+              <option value="folk">Folk</option>
+            </select>
+          </label>
+          <label class="chip" title="The chord instrument. This choice also sets the accompaniment pattern: guitar strums or fingerpicks, strings and voice sustain, keys follow the style.">Chords:
+            <select id="instrumentSelect">
+              <option value="keys">Keys &amp; pads</option>
+              <option value="guitar">Acoustic guitar</option>
+              <option value="violin">Strings (violin)</option>
+              <option value="voice">Your voice (choir)</option>
+            </select>
+          </label>
+          <label class="chip" title="Instrument for the counter-voice that shadows your melody a third below (chord tones first; low notes flip above). It follows your exact sung timing and exports as its own MIDI track.">Harmony:
+            <select id="harmonySelect">
+              <option value="follow">Follow chords</option>
+              <option value="keys">Piano</option>
+              <option value="guitar">Guitar</option>
+              <option value="violin">Strings</option>
+              <option value="voice">Your voice</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <label class="chip" title="Bass instrument. Synth is the built-in triangle bass; the others are sampled.">Bass:
+            <select id="bassSelect">
+              <option value="acoustic">Acoustic</option>
+              <option value="electric">Electric</option>
+              <option value="synth">Synth</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <label class="chip" title="An instrument doubling your sung melody line, at your exact timing — for a full instrumental feel or to reinforce the tune under the vocal.">Melody:
+            <select id="melodySelect">
+              <option value="off">Off</option>
+              <option value="keys">Piano</option>
+              <option value="guitar">Guitar</option>
+              <option value="violin">Strings</option>
+              <option value="voice">Your voice</option>
+            </select>
+          </label>
+          <label class="chip" title="How much the Melody instrument embellishes your line. 0 plays exactly what you sang; higher adds scale-aware passing tones on leaps and neighbor figures on held notes — never in bars where you're already singing busily. Affects only the Melody instrument and its MIDI track; your voice and the transcribed melody stay untouched.">Flourish:
+            <input type="range" id="flourish" min="0" max="100" value="0" />
+          </label>
+          <label class="chip" title="Render the backing with real recorded instrument samples (FluidR3 General MIDI, downloaded once from a CDN and cached) instead of the built-in synthesizers. Unticked or offline, you get the synth sound.">
+            <input type="checkbox" id="sampledSound" checked /> Sampled sound
+          </label>
+          <label class="chip" title="Lower = keep only loud, confident notes (hum the main notes louder). Higher = catch quiet notes too.">Sensitivity:
+            <input type="range" id="sensitivity" min="0" max="100" value="50" />
+          </label>
+          <label class="chip" title="Your shortest intentional note. Anything shorter is absorbed into a neighbor or removed — most stray blips are far shorter than a real 16th.">Min note:
+            <select id="minNote">
+              <option value="0">Off</option>
+              <option value="0.125">32nd</option>
+              <option value="0.25" selected>16th</option>
+              <option value="0.5">8th</option>
+            </select>
+          </label>
+          <label class="chip" title="Snap note starts to volume rises in the audio for sharper timing. Toggle to compare.">
+            <input type="checkbox" id="snapOnsets" checked /> Snap onsets
+          </label>
+          <label class="chip" title="Build the timing grid from your note durations (a half note ends the bar), re-anchored at every note — so a wandering internal tempo never accumulates error. Untick for pure energy-based beat tracking.">
+            <input type="checkbox" id="followNotes" checked /> Follow my timing
+          </label>
+          <label class="chip" title="Simplify the melody to its skeleton before arranging: absorb ornament/grace notes into their neighbors and snap brief out-of-key notes to the scale. 0 = off; higher = longer notes count as ornaments and more gets corrected. Your recorded voice is unchanged.">Auto-tune:
+            <input type="range" id="autoTune" min="0" max="100" value="0" />
+          </label>
+          <label class="chip" title="If you articulate every note with the same syllable (e.g. 'Doo'), the analyzer learns your attack signature from this take and uses it to reject non-notes and to tell real repeated notes from false splits. Auto-disengages if your onsets vary too much.">
+            <input type="checkbox" id="syllableLock" /> Syllable lock <strong id="lockStatus"></strong>
+          </label>
+        </div>
+        <div class="row">
+          <button id="generateBtn" class="big-btn">Generate backing track</button>
+          <button id="melodyOnlyBtn">♪ Melody only</button>
+          <span id="generateStatus" class="status"></span>
+        </div>
+      </div>
+      <p id="analysisError" class="error" hidden></p>
+    </section>
+
+    <!-- 3. Play + export -->
+    <section id="player-panel" class="card" hidden>
+      <h2>3 · Your track</h2>
+      <canvas id="wave" width="900" height="120" tabindex="0" role="img" aria-label="Vocal waveform with detected notes — click a note to edit"></canvas>
+      <div class="row edit-row">
+        <span class="hint edit-hint" title="Bar brightness = the analyzer's confidence in each note (how strongly the neural model heard that pitch there). Faint bars are the ones to double-check — and a note dragged somewhere the model heard nothing fades out.">Edit: drag notes to move (pitch snaps, timing is free) · drag a note's edge to resize · shift-click or drag empty space to multi-select · double-click to add · Delete to remove · faint bar = low confidence</span>
+        <label class="chip" title="Show a pitch-aligned spectrogram under the notes: bright horizontal lines are the sung fundamental and its harmonics. A note bar sitting on a gap (with a bright line an octave below) is an octave error.">
+          <input type="checkbox" id="specToggle" checked /> Spectrogram
+        </label>
+        <button id="deleteNoteBtn" disabled>🗑 Delete</button>
+        <button id="mergeNotesBtn" disabled title="Fuse the selected notes into one note spanning them all, pitched at their duration-weighted average — the manual fix for a held note the analyzer split.">⧉ Merge</button>
+        <button id="regenBtn" hidden>↻ Apply edits</button>
+      </div>
+      <div id="chordStrip" class="chord-strip"></div>
+      <div class="row">
+        <button id="playBtn" class="big-btn">▶ Play</button>
+        <div class="bar wide"><div id="playBar" class="fill"></div></div>
+      </div>
+      <div class="row sliders">
+        <label><span id="vocalLabel">Vocal</span> <input type="range" id="vocalGain" min="0" max="1.5" step="0.01" value="1" /></label>
+        <label><span id="backingLabel">Backing</span> <input type="range" id="backingGain" min="0" max="1.5" step="0.01" value="0.8" /></label>
+        <label title="Your voice's measured overtones, as soft sines — the audible preview of the MIDI harmonics export."><span>Harmonics</span> <input type="range" id="harmonicsGain" min="0" max="1.5" step="0.01" value="0" /></label>
+        <label title="Every pitch the model considered plausible, loudness = probability — the audible preview of the MIDI prob-layers export. Needs a neural-analyzed take."><span>Prob layers</span> <input type="range" id="probGain" min="0" max="1.5" step="0.01" value="0" /></label>
+      </div>
+      <div class="row">
+        <button id="downloadMixBtn">⬇ Download mix (WAV)</button>
+        <button id="downloadBackingBtn">⬇ Backing only</button>
+        <button id="downloadMidiBtn">⬇ MIDI full score</button>
+        <button id="downloadMidiBackingBtn">⬇ MIDI backing</button>
+        <button id="downloadMidiMelodyBtn">⬇ MIDI melody</button>
+        <button id="downloadMidiLayersBtn" title="Every pitch the model considered plausible, with velocity = its probability: the melody comes out loud, octave/harmonic candidates quiet, ambiguity as soft texture. Needs a neural-analyzed take (not MIDI input).">⬇ MIDI prob layers</button>
+        <button id="downloadMidiHarmonicsBtn" title="Your voice's real overtones as MIDI: each melody note's harmonics are measured from the audio and exported as stacked notes with velocity = measured partial strength — your timbre, playable on any instrument.">⬇ MIDI harmonics</button>
+        <label class="chip" title="Extend each melody note to meet the next (gaps up to 2 beats), like a synth's release tail — dry MIDI patches sound choppy otherwise. Longer rests (phrase breaths) are kept.">
+          <input type="checkbox" id="legatoMidi" checked /> Legato
+        </label>
+        <button id="newTakeBtn">↺ New take</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>All analysis and synthesis happen in your browser — your audio never leaves it. Downloaded from a CDN on first use: the note-detection model
+      <a href="https://github.com/spotify/basic-pitch" rel="noopener">Spotify Basic Pitch</a> (Apache&nbsp;2.0) and the instrument samples
+      <a href="https://member.keymusician.com/Member/FluidR3_GM/index.html" rel="noopener">FluidR3_GM</a>
+      (<a href="https://creativecommons.org/licenses/by/3.0/" rel="noopener">CC&nbsp;BY&nbsp;3.0</a>), served via
+      <a href="https://github.com/gleitz/midi-js-soundfonts" rel="noopener">midi-js-soundfonts</a>.</p>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Local audio and anything derived from it — not part of the app.
+Samples/
+samples/
+js/samples-check.js
+
+# Evaluation datasets are large and separately licensed, so they are not
+# redistributed here. See "Accuracy evaluation" in the README.
+vocadito/
+*/manifest.json
+
+# Local run artifacts: dated evaluation results and scratch output.
+eval-*.json
+
+# Local editor / harness configuration
+.claude/
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store

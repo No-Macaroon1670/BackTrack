@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BackTrack — accuracy evaluation</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    main { width: min(1000px, 94vw); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 12px; }
+    th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--card-edge); }
+    th:first-child, td:first-child { text-align: left; }
+    .summary-num { font-size: 1.4rem; color: var(--accent-2); font-variant-numeric: tabular-nums; }
+    .summary-grid { display: flex; gap: 24px; flex-wrap: wrap; margin: 12px 0; }
+    .summary-grid div small { display: block; color: var(--muted); font-size: 0.8rem; }
+    .file-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+    .file-row label { color: var(--muted); min-width: 130px; }
+    .err { color: #ff8a8a; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Back<span class="accent">Track</span> · eval</h1>
+    <p class="tagline">Score the transcription against a real vocal dataset (mir_eval metrics).</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Dataset</h2>
+      <p class="hint">
+        Pick a folder of vocal audio and its reference annotations (matched by
+        filename). Supported: Vocadito / MIREX F0 CSV ("time,freq"), Vocadito
+        note CSV ("start,end,pitch"), MIR-1K <code>.pv</code>. Nothing is
+        uploaded — analysis runs in your browser. Note-level F-measures are the
+        fair score for a note transcriber; frame RPA runs lower because note
+        transcription intentionally omits glissandi a continuous-F0 reference
+        includes.
+      </p>
+      <div class="file-row">
+        <label>Audio files</label>
+        <input type="file" id="audioInput" multiple accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" />
+      </div>
+      <div class="file-row">
+        <label>Annotation files</label>
+        <input type="file" id="annInput" multiple accept=".csv,.txt,.pv,.f0" />
+      </div>
+      <div class="file-row">
+        <label>Max clips</label>
+        <input type="number" id="maxClips" placeholder="all" min="1" style="width:70px" />
+        <label style="min-width:auto">Sensitivity</label>
+        <input type="range" id="sensitivity" min="0" max="100" value="50" />
+      </div>
+      <div class="row">
+        <button id="autoBtn" class="big-btn">Run Vocadito (auto)</button>
+        <button id="compareBtn">Compare configs</button>
+        <button id="runBtn">Run picked files</button>
+        <button id="selfTestBtn">Self-test metrics</button>
+        <button id="downloadBtn" hidden>⬇ Results JSON</button>
+        <span id="status" class="status"></span>
+      </div>
+      <p class="hint">
+        <strong>No dataset is bundled with this site.</strong> Vocadito is ~74 MB
+        and separately licensed, so <strong>Run Vocadito (auto)</strong> only works
+        against a local checkout with the dataset placed in <code>vocadito/</code>
+        (regenerate <code>vocadito/manifest.json</code> with
+        <code>tools/build-eval-manifest.ps1</code>; add <code>?run=vocadito</code>
+        to run on load). Without it, use the file pickers above with your own
+        audio + annotations — or just press <strong>Self-test metrics</strong>,
+        which needs no dataset at all.
+      </p>
+    </section>
+
+    <section class="card" id="resultsCard" hidden>
+      <h2>Results</h2>
+      <div id="summary" class="summary-grid"></div>
+      <div id="tableWrap"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { runDataset, runManifest, runComparison, loadManifest, COMPARE_CONFIGS, selfTest } from "./js/eval.js";
+
+    const $ = (id) => document.getElementById(id);
+    const pct = (v) => (v * 100).toFixed(1) + "%";
+    let lastResults = null;
+
+    function pairFiles(audioFiles, annFiles) {
+      const base = (f) => f.name.replace(/\.[^.]+$/, "").replace(/[_.](f0|notes|pitch|melody)$/i, "");
+      const annByBase = new Map();
+      for (const f of annFiles) annByBase.set(base(f), f);
+      const pairs = [];
+      for (const a of audioFiles) {
+        const b = base(a);
+        let ann = annByBase.get(b);
+        if (!ann) ann = annFiles.find((f) => base(f).startsWith(b) || b.startsWith(base(f)));
+        if (ann) pairs.push({ audio: a, ann });
+      }
+      return pairs;
+    }
+
+    $("runBtn").addEventListener("click", async () => {
+      const pairs = pairFiles([...$("audioInput").files], [...$("annInput").files]);
+      if (!pairs.length) { $("status").textContent = "No matching audio/annotation pairs found."; return; }
+      const max = parseInt($("maxClips").value, 10) || pairs.length;
+      const chosen = pairs.slice(0, max);
+      const settings = { sensitivity: parseInt($("sensitivity").value, 10) / 100 };
+
+      $("runBtn").disabled = true;
+      const clips = [];
+      for (const p of chosen) {
+        clips.push({ name: p.audio.name, audio: await p.audio.arrayBuffer(), annName: p.ann.name, annText: await p.ann.text() });
+      }
+      const { rows, summary } = await runDataset(clips, settings, (done, total, name) => {
+        $("status").textContent = done < total ? `Analyzing ${done + 1}/${total}: ${name}` : "Done.";
+      });
+      render(rows, summary);
+      $("runBtn").disabled = false;
+    });
+
+    async function withManifest(fn, label) {
+      let manifest;
+      try {
+        manifest = await loadManifest();
+      } catch (err) {
+        $("status").textContent = err.message + " — run tools/build-eval-manifest.ps1";
+        return;
+      }
+      $("autoBtn").disabled = true; $("compareBtn").disabled = true;
+      const max = parseInt($("maxClips").value, 10) || Infinity;
+      try {
+        await fn(manifest, max);
+      } catch (err) {
+        $("status").textContent = "Error: " + err.message;
+      } finally {
+        $("autoBtn").disabled = false; $("compareBtn").disabled = false;
+      }
+    }
+
+    $("autoBtn").addEventListener("click", () => withManifest(async (manifest, max) => {
+      const settings = { sensitivity: parseInt($("sensitivity").value, 10) / 100 };
+      const { rows, summary } = await runManifest(manifest, settings, prog, max);
+      lastResults = { dataset: manifest.dataset, settings, summary, rows };
+      render(rows, summary);
+      $("downloadBtn").hidden = false;
+    }));
+
+    $("compareBtn").addEventListener("click", () => withManifest(async (manifest, max) => {
+      const configs = await runComparison(manifest, COMPARE_CONFIGS, prog, max);
+      lastResults = { dataset: manifest.dataset, comparison: configs };
+      renderComparison(configs);
+      $("downloadBtn").hidden = false;
+    }));
+
+    $("downloadBtn").addEventListener("click", () => {
+      const blob = new Blob([JSON.stringify(lastResults, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `eval-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
+      a.click();
+    });
+
+    function prog(done, total, name) {
+      $("status").textContent = done < total ? `Analyzing ${done + 1}/${total}: ${name}` : "Done.";
+    }
+
+    function renderComparison(configs) {
+      $("resultsCard").hidden = false;
+      $("summary").innerHTML = "";
+      const best = Math.max(...configs.filter((c) => c.summary.note).map((c) => c.summary.note.onpF));
+      const head = ["Config", "Clips", "COnP F", "COnPOff F", "Onset F", "RPA", "RCA"];
+      const body = configs.map((c) => {
+        const s = c.summary;
+        const onp = s.note ? s.note.onpF : null;
+        const cells = [c.name, s.clips,
+          s.note ? pct(s.note.onpF) : "—", s.note ? pct(s.note.onpoffF) : "—", s.note ? pct(s.note.onsetF) : "—",
+          s.frame ? pct(s.frame.rpa) : "—", s.frame ? pct(s.frame.rca) : "—"];
+        const hot = onp === best ? ' style="color:var(--good);font-weight:600"' : "";
+        return `<tr${hot}>${cells.map((c) => `<td>${c}</td>`).join("")}</tr>`;
+      });
+      $("tableWrap").innerHTML =
+        `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${body.join("")}</tbody></table>`;
+    }
+
+    $("selfTestBtn").addEventListener("click", async () => {
+      $("status").textContent = "Running self-test…";
+      const r = await selfTest();
+      $("resultsCard").hidden = false;
+      $("summary").innerHTML = "";
+      const pass = (label, ok, got) =>
+        `<div><span class="summary-num" style="color:${ok ? "var(--good)" : "#ff8a8a"}">${ok ? "✓" : "✗"}</span><small>${label} (${got})</small></div>`;
+      $("summary").innerHTML =
+        pass("perfect note F=1", Math.abs(r.perfect - 1) < 1e-9, r.perfect) +
+        pass("miss-one recall=0.67", Math.abs(r.missOneRecall - 2 / 3) < 1e-6, r.missOneRecall.toFixed(3)) +
+        pass("wrong-pitch onset F=1", Math.abs(r.wrongPitchOnsetF - 1) < 1e-9, r.wrongPitchOnsetF) +
+        pass("wrong-pitch COnP F=0", r.wrongPitchOnpF === 0, r.wrongPitchOnpF) +
+        pass("frame same RPA=1", r.frameSame === 1, r.frameSame) +
+        pass("octave RPA=0", r.frameOctaveRpa === 0, r.frameOctaveRpa) +
+        pass("octave RCA=1", r.frameOctaveRca === 1, r.frameOctaveRca) +
+        pass("e2e onset F≥0.9", r.e2eOnsetF >= 0.9, r.e2eOnsetF.toFixed(3)) +
+        pass("e2e COnP F≥0.9", r.e2eOnpF >= 0.9, r.e2eOnpF.toFixed(3));
+      $("tableWrap").innerHTML = "";
+      $("status").textContent = "Self-test complete.";
+    });
+
+    function render(rows, summary) {
+      $("resultsCard").hidden = false;
+      const s = [];
+      s.push(`<div><span class="summary-num">${summary.clips}</span><small>clips scored${summary.failed ? ` · ${summary.failed} failed` : ""}</small></div>`);
+      if (summary.note) {
+        s.push(`<div><span class="summary-num">${pct(summary.note.onpF)}</span><small>COnP F (onset+pitch)</small></div>`);
+        s.push(`<div><span class="summary-num">${pct(summary.note.onpoffF)}</span><small>COnPOff F (+offset)</small></div>`);
+        s.push(`<div><span class="summary-num">${pct(summary.note.onsetF)}</span><small>Onset-only F</small></div>`);
+      }
+      if (summary.frame) {
+        s.push(`<div><span class="summary-num">${pct(summary.frame.rpa)}</span><small>Raw Pitch Accuracy</small></div>`);
+        s.push(`<div><span class="summary-num">${pct(summary.frame.rca)}</span><small>Raw Chroma Accuracy</small></div>`);
+      }
+      $("summary").innerHTML = s.join("");
+
+      const hasNote = rows.some((r) => r.note);
+      const hasFrame = rows.some((r) => r.frame);
+      const head = ["Clip", "Notes",
+        ...(hasNote ? ["COnP F", "COnPOff F", "Onset F"] : []),
+        ...(hasFrame ? ["RPA", "RCA", "Voicing R"] : [])];
+      const body = rows.map((r) => {
+        if (r.error) return `<tr><td>${r.name}</td><td colspan="${head.length - 1}" class="err">${r.error}</td></tr>`;
+        const cells = [r.name, r.nEst];
+        if (hasNote) cells.push(r.note ? pct(r.note.onp.f) : "—", r.note ? pct(r.note.onpoff.f) : "—", r.note ? pct(r.note.onset.f) : "—");
+        if (hasFrame) cells.push(r.frame ? pct(r.frame.rpa) : "—", r.frame ? pct(r.frame.rca) : "—", r.frame ? pct(r.frame.voicingRecall) : "—");
+        return `<tr>${cells.map((c, i) => `<td>${c}</td>`).join("")}</tr>`;
+      });
+      $("tableWrap").innerHTML =
+        `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${body.join("")}</tbody></table>`;
+    }
+
+    if (location.hostname === "localhost") {
+      window.__eval = { runDataset, runManifest, runComparison, loadManifest, COMPARE_CONFIGS, selfTest };
+    }
+
+    // Opening eval.html?run=vocadito autoruns the full set; ?run=compare
+    // sweeps configs. ?max=N limits the clip count (blank field = all).
+    const params = new URLSearchParams(location.search);
+    const maxParam = parseInt(params.get("max"), 10);
+    if (maxParam > 0) $("maxClips").value = String(maxParam);
+    const runParam = params.get("run");
+    if (runParam === "vocadito") addEventListener("DOMContentLoaded", () => $("autoBtn").click());
+    else if (runParam === "compare") addEventListener("DOMContentLoaded", () => $("compareBtn").click());
+  </script>
+</body>
+</html>
