@@ -39,10 +39,22 @@ const state = {
 const player = new Player();
 const editor = new NoteEditor($("wave"), { onChange: onNotesEdited });
 
-// Pre-warm the transcriber (library + model download) while the user is
-// still reading the page / recording, so the first analysis starts hot.
+// Pre-warm the transcriber (library + model weights) on the first sign that
+// the user actually intends to use it — hovering or focusing Record/Upload —
+// rather than at page load. That still hides the download behind the seconds
+// spent recording, without charging every visitor who only came to read.
 let modelReady = false;
-warmup().then(() => { modelReady = true; });
+let warmStarted = false;
+function warmTranscriber() {
+  if (warmStarted) return;
+  warmStarted = true;
+  warmup().then((ok) => { modelReady = ok; });
+}
+for (const id of ["recordBtn", "uploadBtn"]) {
+  for (const ev of ["pointerenter", "pointerdown", "focus"]) {
+    $(id).addEventListener(ev, warmTranscriber, { once: true, passive: true });
+  }
+}
 
 // ---------- Recording ----------
 

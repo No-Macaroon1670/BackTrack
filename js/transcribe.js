@@ -150,10 +150,31 @@ function hardwareWebGL() {
   return _hwGL;
 }
 
+// A network that black-holes the CDN (captive portals, strict proxies, some
+// national routes) never rejects — it just hangs, which would leave the user
+// staring at a stalled progress bar forever. Every remote wait is therefore
+// bounded: on timeout the promise rejects, analyze.js catches it, and the
+// built-in YIN tracker takes over. The slow request may still finish in the
+// background and warm the HTTP cache for the next attempt.
+const LIB_TIMEOUT_MS = 25000;
+
+function withTimeout(promise, ms, what) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 let libPromise = null;
 function loadLib() {
   if (!libPromise) {
-    libPromise = (async () => {
+    libPromise = withTimeout((async () => {
       if (hardwareWebGL()) {
         // GPU path: load TF.js explicitly, switch it to WebGL, and hand that
         // same instance to Basic Pitch (?deps pins both to one TF.js).
@@ -167,7 +188,7 @@ function loadLib() {
       activeBackend = "cpu";
       console.debug("Basic Pitch backend: cpu (worker)");
       return import(/* webpackIgnore: true */ LIB_BUNDLE_URL);
-    })();
+    })(), LIB_TIMEOUT_MS, "Model library download");
     // A rejected promise is still truthy, so without this a single flaky CDN
     // load would pin the whole session to the YIN fallback with no way back.
     // Clearing the cache lets the next take retry (as sampler.js does).
@@ -178,10 +199,9 @@ function loadLib() {
 
 // One shared BasicPitch instance for the inline (GPU) path: constructing it
 // starts the graph-model download/init, and reusing it across takes skips
-// that cost on every new recording.
-// The constructor kicks off the model download and stores it as a promise, so
-// a failed download would otherwise be cached forever too — drop the instance
-// on rejection (and swallow it, since warmup never awaits this promise).
+// that cost on every new recording. The constructor kicks off that download
+// and stores it as a promise, so a failed download would otherwise be cached
+// forever too — drop the instance on rejection.
 let bpInstance = null;
 function getBP(BasicPitch) {
   if (!bpInstance) {
@@ -192,18 +212,28 @@ function getBP(BasicPitch) {
 }
 
 /**
- * Pre-warms the transcriber at page load: fetches the TF.js + Basic Pitch
- * libraries and (on the GPU path) starts the model download, so the user's
- * first analysis doesn't stall on several MB of network. Never throws —
- * failures just mean the first analysis pays the usual cost.
+ * Pre-warms the transcriber: fetches the TF.js + Basic Pitch libraries and
+ * downloads the model weights, so the first analysis doesn't stall on several
+ * MB of network. app.js calls this on the user's first sign of intent (not at
+ * page load) — a visitor who only reads the page should not pay for a model
+ * they never use.
+ *
+ * Resolves true only once the weights are actually usable, because the "still
+ * downloading" phase text keys off it; never throws.
+ *
+ * @returns {Promise<boolean>}
  */
 export function warmup() {
   return loadLib()
-    .then(({ BasicPitch }) => {
-      if (hardwareWebGL()) getBP(BasicPitch);
-      else fetch(MODEL_URL).catch(() => {}); // prime the HTTP cache for the worker
+    .then(async ({ BasicPitch }) => {
+      if (hardwareWebGL()) {
+        await getBP(BasicPitch).model; // the weights, not just the library
+      } else {
+        await fetch(MODEL_URL); // prime the HTTP cache for the worker
+      }
+      return true;
     })
-    .catch(() => {});
+    .catch(() => false);
 }
 
 // Run the model's inference where it's fastest while keeping the UI alive.
@@ -223,14 +253,19 @@ function runInference(x, onProgress, BasicPitch) {
       )
       .then(() => ({ frames, onsets, contours }));
   };
-  if (hardwareWebGL()) return inline();
-  return runInferenceInWorker(x, onProgress).catch((err) => {
-    console.warn("Inference worker unavailable, running on main thread:", err);
-    return inline();
-  });
+  // The model weights download lazily inside the first inference, so this
+  // budget covers network as well as compute: generous per second of audio,
+  // with a floor for short takes.
+  const budget = Math.max(60000, Math.round((x.length / BASIC_PITCH_SR) * 4000));
+  if (hardwareWebGL()) return withTimeout(inline(), budget, "Inference");
+  return withTimeout(runInferenceInWorker(x, onProgress, budget), budget, "Inference")
+    .catch((err) => {
+      console.warn("Inference worker unavailable, running on main thread:", err);
+      return withTimeout(inline(), budget, "Inference");
+    });
 }
 
-function runInferenceInWorker(x, onProgress) {
+function runInferenceInWorker(x, onProgress, budget) {
   return new Promise((resolve, reject) => {
     let worker;
     try {
@@ -239,6 +274,14 @@ function runInferenceInWorker(x, onProgress) {
       reject(e);
       return;
     }
+    // Kill a wedged worker rather than leaking it when the outer timeout fires.
+    const killer = setTimeout(() => {
+      try { worker.terminate(); } catch { /* already gone */ }
+      reject(new Error("Inference worker timed out"));
+    }, budget);
+    const settle = (fn) => (v) => { clearTimeout(killer); fn(v); };
+    resolve = settle(resolve);
+    reject = settle(reject);
     worker.onmessage = (e) => {
       const m = e.data;
       if (m.type === "backend") {
