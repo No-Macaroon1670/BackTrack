@@ -296,6 +296,18 @@ on both sides; counter-intuitively a *stricter* threshold recovers *more*,
 because chasing the argmax through low-confidence frames yields wobbling
 pitch that fragments into unusable runs.
 
+**What a good score actually is.** Vocadito ships two independent human
+annotations, so the harness can score one annotator against the other and
+ask what "perfect" looks like. The answer is **not** 1.0: two experts agree
+at onset F 0.82, COnP 0.74, COnPOff 0.64, and disagree about how many notes
+a clip even contains by roughly 16%. Measured against that ceiling this
+transcriber reaches **86% of human agreement on onsets, 72% on onset+pitch,
+and 60% on offsets** — so onsets are close to saturated and offsets hold
+most of the remaining headroom. Per-clip difficulty also correlates (r ≈
+0.47) with how much the two humans disagree: the hard clips are hard for
+everyone. Raw F-measures here should always be read against that ceiling
+rather than against a perfect score.
+
 Note-level F-measures are the fair score for a note transcriber; frame RPA
 reads lower because note transcription intentionally omits glissandi a
 continuous-F0 reference includes. The "Self-test metrics" button proves the

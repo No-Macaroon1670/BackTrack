@@ -40,7 +40,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 export async function analyzeVocal(
   audioBuffer,
   onProgress = () => {},
-  { sensitivity = 0.5, snapOnsets = true, followNotes = true, autoTune = 0, syllableLock = false, minNote = 0.25, octaveFix = false, adaptivePitch = true, consolidate = true, gapRecovery = true, snapOffsets = false, pitchAugment = 0, gridTempo = true } = {},
+  { sensitivity = 0.5, snapOnsets = true, followNotes = true, autoTune = 0, syllableLock = false, minNote = 0.25, octaveFix = false, adaptivePitch = true, consolidate = true, gapRecovery = true, snapOffsets = false, gridTempo = true } = {},
   modelCache = null,
 ) {
   const mono = toMono(audioBuffer);
@@ -78,44 +78,11 @@ export async function analyzeVocal(
     throw new Error("Couldn't detect any sung notes. Try recording again, closer to the mic and with a clearer melody.");
   }
 
-  // Test-time pitch augmentation. The model is measurably weaker below ~MIDI
-  // 53, which is exactly where low voices live. Rather than compensate with
-  // thresholds, transcribe the take a second time shifted UP into the range
-  // where the model is strong, then map the notes back down. Speeding the
-  // waveform up by r raises pitch by `pitchAugment` semitones and divides
-  // every timestamp by r, so undoing it is a multiply and a subtract.
-  // The extra pass only fills gaps — the unshifted pass stays authoritative.
-  if (pitchAugment > 0 && engine === "basic-pitch") {
-    try {
-      const r = Math.pow(2, pitchAugment / 12);
-      const xUp = resample(
-        resample(mono, audioBuffer.sampleRate, BASIC_PITCH_SR),
-        BASIC_PITCH_SR, BASIC_PITCH_SR / r,
-      );
-      cache.aug ??= {};
-      // adaptivePitch off: the point of shifting is to leave the low-voice
-      // regime, so re-applying the low-voice boost would double-compensate.
-      const augRaw = await transcribeBasicPitch(xUp, () => {}, sensitivity, cache.aug, false);
-      const mapped = (augRaw ?? []).map((n) => ({
-        start: n.start * r,
-        end: n.end * r,
-        dur: (n.end - n.start) * r,
-        midiFloat: n.midiFloat - pitchAugment,
-        amp: n.amp,
-        augmented: true,
-      }));
-      const fresh = mapped.filter((a) =>
-        a.dur >= 0.08 && !notes.some((n) => Math.min(n.end, a.end) - Math.max(n.start, a.start) > 0));
-      if (fresh.length) {
-        const yin = createYin();
-        const kept = fresh.filter((n) => refineNote(x, n, yin));
-        if (kept.length) notes = [...notes, ...kept].sort((a, b) => a.start - b.start);
-        console.debug(`Pitch augment (+${pitchAugment}): ${kept.length} of ${fresh.length} gap notes kept`);
-      }
-    } catch (err) {
-      console.warn("Pitch augmentation unavailable:", err);
-    }
-  }
+  // (Test-time pitch augmentation — transcribing a second time shifted up
+  // into the model's stronger range — was built and measured here, then
+  // removed. It moved nothing on the low-voice clips that motivated it,
+  // because gap recovery below already claims those gaps, and it cost a
+  // whole extra inference. See the README's accuracy notes.)
 
   // Second-pass recovery: re-read the cached posteriorgram in the gaps the
   // first pass left empty, then hold the candidates to the same YIN standard
