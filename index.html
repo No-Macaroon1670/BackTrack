@@ -119,6 +119,8 @@
             <input type="checkbox" id="syllableLock" /> Syllable lock <strong id="lockStatus"></strong>
           </label>
         </div>
+        <canvas id="analysisPreview" width="900" height="110" role="img" aria-label="Detected notes over a pitch-aligned spectrogram — updates as you change the settings"></canvas>
+        <p class="hint">Bright horizontal lines are your voice; the bars are the notes we heard. Drag <strong>Sensitivity</strong> and <strong>Auto-tune</strong> and watch this update — faint bars are low-confidence.</p>
         <div class="row">
           <button id="generateBtn" class="big-btn">Generate backing track</button>
           <button id="melodyOnlyBtn">♪ Melody only</button>

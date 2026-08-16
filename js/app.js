@@ -13,7 +13,8 @@ import { loadVoiceSamples } from "./sampler.js";
 import { arrangementToMidiBlob, parseMidiFile } from "./midi.js";
 import { Player } from "./player.js";
 import { NoteEditor } from "./editor.js";
-import { drawChordStrip, highlightChord, barIndexAt } from "./views.js";
+import { drawChordStrip, highlightChord, barIndexAt, drawWaveform, noteLayout } from "./views.js";
+import { computeSpectrogram } from "./spectrogram.js";
 
 const MAX_TAKE_SECONDS = 90;
 const MAX_UPLOAD_SECONDS = 300;
@@ -31,6 +32,7 @@ const state = {
   modelCache: null, // per-take Basic Pitch output; cleared when the audio changes
   layerBuffers: null, // lazily rendered audition audio: { harmonics, prob }
   voiceTimbre: null, // the take's measured harmonic recipe (voice-timbre synth)
+  previewSpec: null, // analysis-step spectrogram + fixed pitch window, cached per take
   mode: "full", // "full" = vocal + backing, "melody" = vocal + melody preview
   meterRaf: 0,
   playRaf: 0,
@@ -94,6 +96,7 @@ async function finishRecording() {
   try {
     state.vocalBuffer = await state.recorder.stop();
     state.modelCache = null; // new audio: previous model output is stale
+    state.previewSpec = null;
   } catch (err) {
     showError("recError", `Could not decode the recording: ${err.message}`);
     $("recordBtn").disabled = false;
@@ -174,6 +177,7 @@ $("uploadInput").addEventListener("change", async (e) => {
 
   state.vocalBuffer = buf;
   state.modelCache = null; // new audio: previous model output is stale
+  state.previewSpec = null;
   await runAnalysis();
 });
 
@@ -196,6 +200,7 @@ async function handleMidiUpload(file, arrayBuffer) {
       duration: parsed.duration,
     };
     state.vocalBuffer = await renderMelodyPreview(parsed.notes, 44100);
+    state.previewSpec = null;
     $("uploadName").textContent = `${file.name} (${parsed.notes.length} notes)`;
   } catch (err) {
     $("uploadName").textContent = "";
@@ -237,11 +242,13 @@ function analysisSettings() {
   };
 }
 
-async function runAnalysis() {
+async function runAnalysis({ rescroll = true, keepResults = false } = {}) {
   $("analysis-panel").hidden = false;
-  $("analysis-progress").hidden = false;
-  $("analysis-results").hidden = true;
-  $("player-panel").hidden = true;
+  // On a settings re-run the results (and the preview) stay on screen: the
+  // point is to watch them change, not to have them blink out and back.
+  $("analysis-progress").hidden = keepResults;
+  $("analysis-results").hidden = !keepResults;
+  if (!keepResults) $("player-panel").hidden = true;
   hideError("analysisError");
   $("analysisBar").style.width = "0%";
   // Honest phase text: the first ever analysis may be waiting on the model
@@ -251,7 +258,7 @@ async function runAnalysis() {
     : modelReady
       ? "Listening to your performance…"
       : "Downloading the note-detection model (first run, a few MB)…";
-  $("analysis-panel").scrollIntoView({ behavior: "smooth" });
+  if (rescroll) $("analysis-panel").scrollIntoView({ behavior: "smooth" });
 
   try {
     // The model cache makes settings changes near-instant: inference runs
@@ -272,6 +279,45 @@ async function runAnalysis() {
   $("analysis-progress").hidden = true;
   $("analysis-results").hidden = false;
   fillAnalysisChips();
+  drawAnalysisPreview();
+}
+
+/**
+ * The notes we heard, over the take's own spectrogram, shown during the
+ * analysis step. Judging Sensitivity and Auto-tune used to require a full
+ * generate-and-listen cycle even though re-analysis takes ~200 ms — this puts
+ * the evidence on screen at the moment the slider moves.
+ *
+ * The spectrogram is computed once per take and reused, so dragging costs
+ * only a blit plus a few dozen rectangles. That means the pitch window has to
+ * be fixed up front (generously padded), since a changing window would
+ * invalidate the cached image.
+ */
+function drawAnalysisPreview() {
+  const cv = $("analysisPreview");
+  if (!cv || !state.vocalBuffer || !state.analysis?.notes?.length) return;
+  const notes = state.analysis.notes;
+  if (!state.previewSpec) {
+    let lo = Infinity, hi = -Infinity;
+    for (const n of notes) { lo = Math.min(lo, n.midi); hi = Math.max(hi, n.midi); }
+    if (!Number.isFinite(lo)) { lo = 57; hi = 69; }
+    lo -= 6; hi += 6;
+    while (hi - lo < 24) { hi++; lo--; } // two octaves: settings can add notes outside today's span
+    const range = { lo, hi };
+    let spec = null;
+    try {
+      spec = computeSpectrogram(state.vocalBuffer, cv.width, cv.height,
+        noteLayout(cv, state.vocalBuffer.duration, notes, range));
+    } catch (err) {
+      console.warn("Preview spectrogram unavailable:", err);
+    }
+    state.previewSpec = { spec, range };
+  }
+  noteConfidence(state.modelCache, notes); // faint bars = the ones to distrust
+  drawWaveform(cv, state.vocalBuffer, notes, {
+    background: state.previewSpec.spec,
+    range: state.previewSpec.range,
+  });
 }
 
 const ENGINE_LABELS = {
@@ -303,13 +349,35 @@ function fillAnalysisChips() {
 
 // Re-analyze the same take when a transcription setting changes
 // (not applicable to MIDI input, whose notes are exact).
-function reanalyzeIfPossible() {
-  if (state.vocalBuffer && state.analysis && state.analysis.engine !== "midi" && !state.recording) {
-    runAnalysis();
+let analyzing = false;
+let reanalyzePending = false;
+
+async function reanalyzeIfPossible() {
+  if (!(state.vocalBuffer && state.analysis && state.analysis.engine !== "midi" && !state.recording)) return;
+  // Dragging outruns a ~200 ms re-analysis; coalesce instead of queueing a
+  // run per event, so the preview always settles on the slider's final value.
+  if (analyzing) { reanalyzePending = true; return; }
+  analyzing = true;
+  try {
+    await runAnalysis({ rescroll: false, keepResults: true });
+  } finally {
+    analyzing = false;
   }
+  if (reanalyzePending) { reanalyzePending = false; reanalyzeIfPossible(); }
 }
+
+let reanalyzeTimer = 0;
+const reanalyzeSoon = () => {
+  clearTimeout(reanalyzeTimer);
+  reanalyzeTimer = setTimeout(reanalyzeIfPossible, 120);
+};
+
 for (const id of ["sensitivity", "snapOnsets", "followNotes", "autoTune", "syllableLock", "minNote"]) {
   $(id).addEventListener("change", reanalyzeIfPossible);
+}
+// Sliders also update while being dragged, so the preview tracks the handle.
+for (const id of ["sensitivity", "autoTune"]) {
+  $(id).addEventListener("input", reanalyzeSoon);
 }
 
 function currentBeats() {
@@ -637,6 +705,7 @@ $("newTakeBtn").addEventListener("click", () => {
   state.modelCache = null;
   state.layerBuffers = null;
   state.voiceTimbre = null;
+  state.previewSpec = null;
   $("analysis-panel").hidden = true;
   $("player-panel").hidden = true;
   $("recTimer").textContent = "0:00";
