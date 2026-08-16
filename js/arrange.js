@@ -8,7 +8,10 @@
 // barDynamics, so it follows the singer's energy too: drums sit out the
 // first bar, patterns thin out when the voice pulls back, phrase-ending
 // rests get a drum fill into a crash, and the take closes on a held chord
-// instead of stopping dead.
+// instead of stopping dead. Repeated phrases are found in form.js and
+// harmonised identically, so the same material sounds like the same material.
+
+import { detectForm, unifyRepeats } from "./form.js";
 
 const NOTE_NAMES_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const NOTE_NAMES_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
@@ -123,7 +126,7 @@ export function uniformBeats(firstOnset, duration, bpm) {
  * @param {{harmony?: boolean}} opts legacy harmony toggle for the string form
  * @returns {{pads, bass, drums, harmony, melody, voices, chordSymbols, nMeasures, style, instrument, tuningCents, totalDur}}
  */
-export function buildArrangement({ notes, key, beats, duration, tuningCents = 0 }, styleName, voicesOrInstrument = "keys", { harmony = true, flourish = 0 } = {}) {
+export function buildArrangement({ notes, key, beats, duration, tuningCents = 0 }, styleName, voicesOrInstrument = "keys", { harmony = true, flourish = 0, songForm = true } = {}) {
   const voices = typeof voicesOrInstrument === "string"
     ? { chords: voicesOrInstrument, harmony: harmony ? "follow" : "off", bass: "acoustic", melody: "off" }
     : { chords: "keys", harmony: "follow", bass: "acoustic", melody: "off", ...voicesOrInstrument };
@@ -151,6 +154,16 @@ export function buildArrangement({ notes, key, beats, duration, tuningCents = 0 
       deg: c.deg,
     };
   });
+
+  // Song form: make the same phrase sound like the same phrase. Repeats are
+  // harmonised identically, and later occurrences are played a little fuller
+  // so the take builds instead of restating.
+  const form = songForm ? detectForm(notes, bars) : { phrases: [], nLabels: 0 };
+  if (songForm && form.phrases.length) {
+    const unified = unifyRepeats(form, segChords);
+    if (unified) console.debug(`Song form: ${form.nLabels} distinct phrases, ${unified} segments unified across repeats`);
+    applyFormArc(form, bars, dyn);
+  }
 
   const anchors = chordAnchors(notes, bars, segChords);
   const colors = segmentColors(weights, segChords);
@@ -294,6 +307,30 @@ function buildBars(beats, phase, notes, duration) {
 
 function barBeat(bar) {
   return (bar.bt[4] - bar.bt[0]) / 4;
+}
+
+/**
+ * Shapes the take across repeats: the first time a phrase is heard it is
+ * played back a little, and each return is played fuller. That is the
+ * cheapest honest version of an arrangement arc — the band commits more as
+ * the song establishes itself — and it rides on the dynamics layer that
+ * already exists, so drums thin and thicken accordingly.
+ */
+function applyFormArc(form, bars, dyn) {
+  // Only shape material that actually returns. A take with no repeats (a
+  // single pass of a tune, which is what most short hums are) must come out
+  // byte-identical to form-off — otherwise the feature quietly re-levels
+  // every arrangement it can't find structure in.
+  const counts = new Map();
+  for (const p of form.phrases) counts.set(p.label, (counts.get(p.label) ?? 0) + 1);
+  if (![...counts.values()].some((n) => n > 1)) return;
+  for (const p of form.phrases) {
+    if ((counts.get(p.label) ?? 0) < 2) continue;
+    const gain = p.occurrence === 0 ? 0.92 : Math.min(1.12, 1 + 0.06 * p.occurrence);
+    for (let b = p.startBar; b <= p.endBar && b < dyn.intensity.length; b++) {
+      dyn.intensity[b] = Math.max(0.3, Math.min(1, dyn.intensity[b] * gain));
+    }
+  }
 }
 
 /**

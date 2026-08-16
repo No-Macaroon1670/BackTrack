@@ -56,6 +56,14 @@ export function drawWaveform(canvas, vocalBuffer, notes, { selectedIndex = -1, s
     }
   }
 
+  // The spectrogram is brightest exactly where the voice is strongest, which
+  // is exactly where the note bars sit — so knock it back a little first.
+  // Enough to read the harmonics, not enough to compete with the notes.
+  if (background) {
+    c.fillStyle = "rgba(6, 3, 16, 0.38)";
+    c.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
   if (!notes?.length) return;
   const L = noteLayout(canvas, vocalBuffer.duration, notes, range);
   notes.forEach((n, i) => {
@@ -63,11 +71,16 @@ export function drawWaveform(canvas, vocalBuffer, notes, { selectedIndex = -1, s
     const w = Math.max(2, L.toX(n.end) - x);
     const y = L.toY(n.midi);
     const sel = selectedIndices ? selectedIndices.has(i) : i === selectedIndex;
-    const h = sel ? 5 : 3;
+    const h = sel ? 6 : 4;
     // Confidence shading: bars fade with the model's support for the note as
     // drawn (selection stays solid so faint notes are still easy to grab).
-    c.globalAlpha = sel || n.conf === undefined ? 1 : 0.25 + 0.75 * n.conf;
-    c.fillStyle = sel ? "#ff5d73" : "#6fe3a5";
+    // The floor is high enough that a low-confidence bar is still findable.
+    c.globalAlpha = sel || n.conf === undefined ? 1 : 0.45 + 0.55 * n.conf;
+    // Dark halo under every bar: makes it legible over bright harmonics and
+    // over the dark background alike, without relying on hue contrast.
+    c.fillStyle = "rgba(0, 0, 0, 0.6)";
+    c.fillRect(x - 1, y - h / 2 - 1.5, w + 2, h + 3);
+    c.fillStyle = sel ? "#ff6b80" : "#9dffcd";
     c.fillRect(x, y - h / 2, w, h);
   });
   c.globalAlpha = 1;
