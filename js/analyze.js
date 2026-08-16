@@ -115,7 +115,7 @@ export async function analyzeVocal(
   // re-articulated repeats (which dip at the closure) survive. Runs before
   // onset snap so snapping only ever sees real onsets.
   if (consolidate) {
-    const res = consolidateRepeats(x, notes);
+    const res = consolidateRepeats(x, notes, typeof consolidate === "object" ? consolidate : {});
     notes = res.notes;
     if (res.merged) console.debug(`Consolidation merged ${res.merged} held-note fragments`);
   }

@@ -180,6 +180,14 @@ export function refineNote(x, note, yin = createYin()) {
  *
  * @returns {{notes: Array, merged: number}}
  */
+// A spectral-flux veto was tried here and measured harmful on both datasets:
+// the idea was that a re-articulated note disturbs the spectrum even when the
+// volume carries through, which should protect legato singers from having
+// genuinely repeated notes fused. It splits on vibrato and pitch movement
+// instead. Vocadito: onset F .705 -> .695, COnP .533 -> .527, COnPOff
+// .385 -> .360, 20 clips worse against 12 better. On the author's own hum,
+// note counts moved further from the hand-cleaned reference (55 -> 63 against
+// a target of 32). Consolidation was not over-merging after all.
 export function consolidateRepeats(x, notes, { maxGap = 0.12, pitchTol = 0.6, dipRatio = 0.5 } = {}) {
   const interior = (n) => {
     const probes = [0.3, 0.5, 0.7].map((f) => {
