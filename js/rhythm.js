@@ -95,6 +95,46 @@ export function noteAnchoredGrid(notes, bpmInit, duration) {
  * un-thinned (eighth-spaced) grid would make every "bar" a half-bar and place
  * chords at double rate.
  */
+/**
+ * Picks the tempo whose metrical grid best explains the sung onsets.
+ *
+ * The previous rule — take the median spacing of the note-anchored grid and
+ * fold it into range — answers "what is the commonest gap?", which is not the
+ * same question as "what pulse are these notes on". Measurement showed the
+ * median rule lands on a tempo that fits the onsets no better than one
+ * derived from perfect transcription, i.e. the estimator, not the note list,
+ * was the limit.
+ *
+ * Each candidate is scored by how many onsets fall near an eighth-note
+ * position, MINUS the hit rate expected by chance at that tempo. Without that
+ * correction faster grids win automatically (denser grids catch more onsets),
+ * which is exactly the octave error a naive fit makes.
+ *
+ * @returns {number} BPM within [lo, hi]
+ */
+export function bestGridTempo(notes, { lo = 70, hi = 140, tol = 0.06, phases = 16 } = {}) {
+  const onsets = notes.map((n) => n.start);
+  if (onsets.length < 4) return 100;
+  let bestBpm = 100, bestScore = -Infinity;
+  for (let bpm = lo; bpm <= hi; bpm += 0.5) {
+    const step = 30 / bpm; // eighth-note period
+    let hits = 0;
+    for (let p = 0; p < phases; p++) {
+      const phase = (p / phases) * step;
+      let h = 0;
+      for (const t of onsets) {
+        const u = (t - phase) / step;
+        if (Math.abs(u - Math.round(u)) * step <= tol) h++;
+      }
+      if (h > hits) hits = h;
+    }
+    // Chance = the share of the timeline within tol of any grid point.
+    const score = hits / onsets.length - Math.min(1, (2 * tol) / step);
+    if (score > bestScore) { bestScore = score; bestBpm = bpm; }
+  }
+  return bestBpm;
+}
+
 export function foldTempo(bpm, beats = null) {
   let fold = 1;
   while (bpm > 140) { bpm /= 2; fold *= 2; }

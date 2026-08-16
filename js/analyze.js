@@ -16,7 +16,7 @@ import {
   refineNote, octaveCorrect, consolidateRepeats, snapNoteOnsets, snapNoteOffsets,
   applySyllableLock, applyMinNote, simplifyNotes,
 } from "./notes.js";
-import { detectBeats, noteAnchoredGrid, foldTempo } from "./rhythm.js";
+import { detectBeats, noteAnchoredGrid, foldTempo, bestGridTempo } from "./rhythm.js";
 import { detectKey, estimateTuning } from "./key.js";
 
 // detectKey is used directly by app.js (MIDI-upload path); re-export so its
@@ -40,7 +40,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 export async function analyzeVocal(
   audioBuffer,
   onProgress = () => {},
-  { sensitivity = 0.5, snapOnsets = true, followNotes = true, autoTune = 0, syllableLock = false, minNote = 0.25, octaveFix = false, adaptivePitch = true, consolidate = true, gapRecovery = true, snapOffsets = false, pitchAugment = 0 } = {},
+  { sensitivity = 0.5, snapOnsets = true, followNotes = true, autoTune = 0, syllableLock = false, minNote = 0.25, octaveFix = false, adaptivePitch = true, consolidate = true, gapRecovery = true, snapOffsets = false, pitchAugment = 0, gridTempo = true } = {},
   modelCache = null,
 ) {
   const mono = toMono(audioBuffer);
@@ -232,7 +232,10 @@ export async function analyzeVocal(
     intervals.sort((a, b) => a - b);
     // The note-anchored grid drifts to eighth-note spacing on syllabic singing;
     // fold the tempo and thin the grid so bars span a real 4/4 bar.
-    ({ tempo, beats } = foldTempo(60 / intervals[Math.floor(intervals.length / 2)], beats));
+    const medianBpm = 60 / intervals[Math.floor(intervals.length / 2)];
+    // gridTempo: pick the pulse the onsets actually sit on rather than their
+    // commonest spacing (see rhythm.bestGridTempo).
+    ({ tempo, beats } = foldTempo(gridTempo ? bestGridTempo(notes) : medianBpm, beats));
   }
 
   return {
