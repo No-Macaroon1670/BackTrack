@@ -514,6 +514,7 @@ $("playBtn").addEventListener("click", async () => {
   const tickPlay = () => {
     const pos = player.position();
     $("playBar").style.width = `${Math.min(100, (pos / player.duration) * 100)}%`;
+    editor.setPlayhead(pos); // sweep the cursor across the notes/spectrogram
     // Follow the music through the chord strip.
     if (state.mode === "full" && state.arrangement) {
       const bar = barIndexAt(state.arrangement.bars, pos);
@@ -536,6 +537,7 @@ function stopPlayback() {
 function resetPlayButton() {
   $("playBtn").textContent = "▶ Play";
   $("playBar").style.width = "0%";
+  editor.setPlayhead(null);
   highlightChord($("chordStrip"), -1);
 }
 

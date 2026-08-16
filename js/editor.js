@@ -32,6 +32,7 @@ export class NoteEditor {
     this.showSpec = true;
     this.specCanvas = null; // cached offscreen spectrogram (audio-derived; survives edits)
 
+    this.playhead = null; // seconds during playback, null when stopped
     this.drag = null; // { mode: "move"|"resize-l"|"resize-r"|"marquee", ... }
     this._bind();
   }
@@ -77,7 +78,27 @@ export class NoteEditor {
       range: this.range,
       background: this.showSpec ? this.specCanvas : null,
       marquee: this.drag?.mode === "marquee" ? this.drag.rect : null,
+      playhead: this.playhead,
     });
+  }
+
+  /**
+   * Moves the playback cursor (seconds, or null to clear). Skips the redraw
+   * when the line wouldn't move a whole pixel, so following playback at 60fps
+   * costs at most one repaint per pixel of travel.
+   */
+  setPlayhead(t) {
+    if (t === null) {
+      if (this.playhead === null) return;
+      this.playhead = null;
+      this.redraw();
+      return;
+    }
+    if (!this.buffer) return;
+    const perPx = this.duration / this.canvas.width;
+    if (this.playhead !== null && Math.abs(t - this.playhead) < perPx) return;
+    this.playhead = t;
+    this.redraw();
   }
 
   /** Replaces the selection with a single index (or clears it with -1). */

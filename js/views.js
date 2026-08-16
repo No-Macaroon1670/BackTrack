@@ -34,7 +34,7 @@ export function noteLayout(canvas, duration, notes, range = null) {
  * bars. When `background` (an offscreen spectrogram canvas) is given it is
  * blitted as the base instead of the waveform.
  */
-export function drawWaveform(canvas, vocalBuffer, notes, { selectedIndex = -1, selectedIndices = null, range = null, background = null, marquee = null } = {}) {
+export function drawWaveform(canvas, vocalBuffer, notes, { selectedIndex = -1, selectedIndices = null, range = null, background = null, marquee = null, playhead = null } = {}) {
   const c = canvas.getContext("2d");
   c.clearRect(0, 0, canvas.width, canvas.height);
   if (background) {
@@ -71,6 +71,20 @@ export function drawWaveform(canvas, vocalBuffer, notes, { selectedIndex = -1, s
     c.fillRect(x, y - h / 2, w, h);
   });
   c.globalAlpha = 1;
+
+  // Playhead: a bright line sweeping the notes during playback, so the ear
+  // and the eye are looking at the same moment. Drawn last, over everything.
+  if (playhead !== null && playhead >= 0) {
+    const px = Math.round(L.toX(playhead)) + 0.5;
+    if (px >= 0 && px <= canvas.width) {
+      c.strokeStyle = "#ffd166";
+      c.lineWidth = 1.5;
+      c.beginPath();
+      c.moveTo(px, 0);
+      c.lineTo(px, canvas.height);
+      c.stroke();
+    }
+  }
 
   if (marquee) {
     c.strokeStyle = "rgba(255, 255, 255, 0.8)";
